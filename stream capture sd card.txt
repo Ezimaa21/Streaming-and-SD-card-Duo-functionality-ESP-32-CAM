@@ -1,0 +1,197 @@
+#include "WiFi.h"
+#include "SD_MMC.h"
+#include "ESPAsyncWebServer.h"
+#include "esp_camera.h"
+#include <time.h>
+
+// WiFi credentials
+const char* ssid     = "MW40V_D08E";
+const char* password = "76844450";
+
+
+// Camera Settings
+#define PWDN_GPIO_NUM 32
+#define RESET_GPIO_NUM -1
+#define XCLK_GPIO_NUM 0
+#define SIOD_GPIO_NUM 26
+#define SIOC_GPIO_NUM 27
+#define Y9_GPIO_NUM 35
+#define Y8_GPIO_NUM 34
+#define Y7_GPIO_NUM 39
+#define Y6_GPIO_NUM 36
+#define Y5_GPIO_NUM 21
+#define Y4_GPIO_NUM 19
+#define Y3_GPIO_NUM 18
+#define Y2_GPIO_NUM 5
+#define VSYNC_GPIO_NUM 25
+#define HREF_GPIO_NUM 23
+#define PCLK_GPIO_NUM 22
+
+AsyncWebServer server(80);
+
+// Embedded HTML
+const char* htmlHomePage PROGMEM = R"HTMLHOMEPAGE(
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; background-color: #f0f0f0; }
+        #cameraImage { width: 400px; height: 250px; border: 2px solid #ccc; }
+        button { margin-top: 10px; padding: 10px 20px; font-size: 16px; }
+    </style>
+</head>
+<body>
+    <h1>ESP32-CAM Stream</h1>
+    <img id="cameraImage" src="/stream"><br>
+    <button onclick="captureImage()">Capture Image</button>
+    <script>
+        // Refresh the camera image every 100ms
+        setInterval(function() {
+            var img = document.getElementById("cameraImage");
+            img.src = "/stream?" + new Date().getTime(); // Add timestamp to prevent caching
+        }, 100);
+
+        // Function to capture an image
+        function captureImage() {
+            fetch("/capture")
+                .then(response => response.text())
+                .then(data => alert(data))
+                .catch(error => console.error("Error capturing image:", error));
+        }
+    </script>
+</body>
+</html>
+)HTMLHOMEPAGE";
+
+// Camera Functions
+void setupCamera() {
+    camera_config_t config;
+    config.ledc_channel = LEDC_CHANNEL_4;
+    config.ledc_timer = LEDC_TIMER_2;
+    config.pin_d0 = Y2_GPIO_NUM;
+    config.pin_d1 = Y3_GPIO_NUM;
+    config.pin_d2 = Y4_GPIO_NUM;
+    config.pin_d3 = Y5_GPIO_NUM;
+    config.pin_d4 = Y6_GPIO_NUM;
+    config.pin_d5 = Y7_GPIO_NUM;
+    config.pin_d6 = Y8_GPIO_NUM;
+    config.pin_d7 = Y9_GPIO_NUM;
+    config.pin_xclk = XCLK_GPIO_NUM;
+    config.pin_pclk = PCLK_GPIO_NUM;
+    config.pin_vsync = VSYNC_GPIO_NUM;
+    config.pin_href = HREF_GPIO_NUM;
+    config.pin_sscb_sda = SIOD_GPIO_NUM;
+    config.pin_sscb_scl = SIOC_GPIO_NUM;
+    config.pin_pwdn = PWDN_GPIO_NUM;
+    config.pin_reset = RESET_GPIO_NUM;
+    config.xclk_freq_hz = 20000000;
+    config.pixel_format = PIXFORMAT_JPEG;
+    config.frame_size = FRAMESIZE_VGA;
+    config.jpeg_quality = 10;
+    config.fb_count = 1;
+
+    esp_err_t err = esp_camera_init(&config);
+    if (err != ESP_OK) {
+        Serial.printf("Camera init failed with error 0x%x", err);
+        return;
+    }
+}
+
+// Function to save image to SD card
+bool saveImageToSD(camera_fb_t *fb) {
+    // Create the "plant" directory if it doesn't exist
+    if (!SD_MMC.exists("/plant")) {
+        SD_MMC.mkdir("/plant");
+    }
+
+    // Generate a timestamp for the filename
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo)) {
+        Serial.println("Failed to obtain time");
+        return false;
+    }
+    char filename[64];
+    strftime(filename, sizeof(filename), "/plant/plant_%Y%m%d_%H%M%S.jpg", &timeinfo);
+
+    // Save the image to the SD card
+    File file = SD_MMC.open(filename, FILE_WRITE);
+    if (!file) {
+        Serial.println("Failed to open file for writing");
+        return false;
+    }
+    file.write(fb->buf, fb->len);
+    file.close();
+    Serial.println("Image saved: " + String(filename));
+    return true;
+}
+
+// Handle image capture and save
+void handleCapture(AsyncWebServerRequest *request) {
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) {
+        Serial.println("Camera capture failed");
+        request->send(500, "text/plain", "Camera capture failed");
+        return;
+    }
+
+    if (saveImageToSD(fb)) {
+        request->send(200, "text/plain", "Image saved to SD card");
+    } else {
+        request->send(500, "text/plain", "Failed to save image");
+    }
+
+    esp_camera_fb_return(fb);
+}
+
+void handleStream(AsyncWebServerRequest *request) {
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) {
+        Serial.println("Camera capture failed");
+        request->send(500, "text/plain", "Camera capture failed");
+        return;
+    }
+    request->send_P(200, "image/jpeg", fb->buf, fb->len);
+    esp_camera_fb_return(fb);
+}
+
+void setup() {
+    Serial.begin(115200);
+    delay(500);  // Small delay before initializing
+
+    // Initialize SD_MMC
+    if (!SD_MMC.begin("/sdcard", true)) {
+        Serial.println("SD Card Mount Failed");
+        return;
+    }
+    Serial.println("SD Card initialized successfully.");
+
+    // Connect to WiFi
+    WiFi.begin(ssid, password);
+    Serial.print("Connecting to WiFi...");
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(1000);
+        Serial.print(".");
+    }
+    Serial.println("\nConnected! IP Address: " + WiFi.localIP().toString());
+
+    // Initialize the camera
+    setupCamera();
+
+    // Initialize time (for timestamp)
+    configTime(0, 0, "pool.ntp.org");  // Use NTP to get the current time
+
+    // Web server routes
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send_P(200, "text/html", htmlHomePage);
+    });
+    server.on("/stream", HTTP_GET, handleStream);
+    server.on("/capture", HTTP_GET, handleCapture);
+
+    server.begin();
+    Serial.println("Server started! Open in browser: http://" + WiFi.localIP().toString());
+}
+
+void loop() {
+    // Nothing needed here (server handles requests asynchronously)
+}
