@@ -100,9 +100,9 @@ void setupCamera() {
 
 // Function to save image to SD card
 bool saveImageToSD(camera_fb_t *fb) {
-    // Create the "plant" directory if it doesn't exist
-    if (!SD_MMC.exists("/plant")) {
-        SD_MMC.mkdir("/plant");
+    // Create the "folder_name" directory if it doesn't exist
+    if (!SD_MMC.exists("/folder_name")) {
+        SD_MMC.mkdir("/folder_name");
     }
 
     // Generate a timestamp for the filename
@@ -112,7 +112,7 @@ bool saveImageToSD(camera_fb_t *fb) {
         return false;
     }
     char filename[64];
-    strftime(filename, sizeof(filename), "/plant/plant_%Y%m%d_%H%M%S.jpg", &timeinfo);
+    strftime(filename, sizeof(filename), "/folder_name/file_name_%Y%m%d_%H%M%S.jpg", &timeinfo);
 
     // Save the image to the SD card
     File file = SD_MMC.open(filename, FILE_WRITE);
